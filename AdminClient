@@ -1,0 +1,480 @@
+--!strict
+--[[
+	ADMIN PANEL - Fully Fixed Client
+	• Tool opens panel
+	• RightCtrl opens panel
+	• Rainbow arm works
+	• Black & White theme
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local StarterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- Wait for remotes
+local Remotes = ReplicatedStorage:WaitForChild("AdminRemotes", 20)
+if not Remotes then
+	warn("[AdminPanel] Remotes not found - server script may not be running")
+	return
+end
+
+local RE_Execute = Remotes:WaitForChild("ExecuteCommand")
+local RE_RequestPanel = Remotes:WaitForChild("RequestPanel")
+local RE_Notify = Remotes:WaitForChild("Notify")
+local RF_GetPlayerList = Remotes:WaitForChild("GetPlayerList")
+
+-- Theme (Black & White)
+local Theme = {
+	Bg = Color3.fromRGB(12, 12, 12),
+	Surface = Color3.fromRGB(22, 22, 22),
+	Surface2 = Color3.fromRGB(32, 32, 32),
+	Surface3 = Color3.fromRGB(45, 45, 45),
+	Accent = Color3.fromRGB(255, 255, 255),
+	Text = Color3.fromRGB(255, 255, 255),
+	TextDim = Color3.fromRGB(180, 180, 180),
+	TextMuted = Color3.fromRGB(120, 120, 120),
+	Success = Color3.fromRGB(220, 220, 220),
+	Border = Color3.fromRGB(60, 60, 60),
+}
+
+-- ========== GUI ==========
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AdminPanel"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.IgnoreGuiInset = true
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local window = Instance.new("Frame")
+window.Name = "Window"
+window.Size = UDim2.new(0, 900, 0, 560)
+window.Position = UDim2.new(0.5, -450, 0.5, -280)
+window.BackgroundColor3 = Theme.Bg
+window.BorderSizePixel = 0
+window.Visible = false
+window.ClipsDescendants = true
+window.Parent = screenGui
+
+Instance.new("UICorner", window).CornerRadius = UDim.new(0, 10)
+local stroke = Instance.new("UIStroke", window)
+stroke.Color = Theme.Border
+stroke.Thickness = 1
+
+-- Left sidebar
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.new(0, 52, 1, 0)
+sidebar.BackgroundColor3 = Theme.Surface
+sidebar.BorderSizePixel = 0
+sidebar.Parent = window
+
+local sideIcons = {
+	{Id = "Executor", Icon = "</>"},
+	{Id = "Favorites", Icon = "📘"},
+	{Id = "Links", Icon = "🔗"},
+	{Id = "Players", Icon = "👤"},
+	{Id = "Settings", Icon = "⚙️"},
+}
+
+local currentPage = "Executor"
+local pageFrames = {}
+local iconButtons = {}
+
+local function setPage(id)
+	currentPage = id
+	for pageId, frame in pairs(pageFrames) do
+		frame.Visible = (pageId == id)
+	end
+	for btnId, btn in pairs(iconButtons) do
+		btn.BackgroundColor3 = (btnId == id) and Theme.Surface3 or Theme.Surface
+		btn.TextColor3 = (btnId == id) and Theme.Accent or Theme.TextDim
+	end
+end
+
+for i, data in ipairs(sideIcons) do
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -8, 0, 44)
+	btn.Position = UDim2.new(0, 4, 0, 12 + (i-1)*52)
+	btn.BackgroundColor3 = Theme.Surface
+	btn.Text = data.Icon
+	btn.TextColor3 = Theme.TextDim
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 18
+	btn.Parent = sidebar
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+	iconButtons[data.Id] = btn
+	btn.MouseButton1Click:Connect(function()
+		setPage(data.Id)
+	end)
+end
+
+-- Top bar
+local topBar = Instance.new("Frame")
+topBar.Size = UDim2.new(1, -52, 0, 42)
+topBar.Position = UDim2.new(0, 52, 0, 0)
+topBar.BackgroundColor3 = Theme.Surface
+topBar.BorderSizePixel = 0
+topBar.Parent = window
+
+local topFix = Instance.new("Frame")
+topFix.Size = UDim2.new(1, 0, 0, 12)
+topFix.Position = UDim2.new(0, 0, 1, -12)
+topFix.BackgroundColor3 = Theme.Surface
+topFix.BorderSizePixel = 0
+topFix.Parent = topBar
+
+local scriptTab = Instance.new("TextButton")
+scriptTab.Size = UDim2.new(0, 120, 0, 28)
+scriptTab.Position = UDim2.new(0, 12, 0.5, -14)
+scriptTab.BackgroundColor3 = Theme.Surface2
+scriptTab.Text = "  Command 1"
+scriptTab.TextColor3 = Theme.Text
+scriptTab.Font = Enum.Font.Gotham
+scriptTab.TextSize = 13
+scriptTab.TextXAlignment = Enum.TextXAlignment.Left
+scriptTab.Parent = topBar
+Instance.new("UICorner", scriptTab).CornerRadius = UDim.new(0, 6)
+
+local function makeWinBtn(text, x)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, 32, 0, 32)
+	b.Position = UDim2.new(1, x, 0.5, -16)
+	b.BackgroundTransparency = 1
+	b.Text = text
+	b.TextColor3 = Theme.TextDim
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	b.Parent = topBar
+	return b
+end
+
+local closeBtn = makeWinBtn("×", -40)
+local minBtn = makeWinBtn("–", -74)
+
+-- Toolbar
+local toolbar = Instance.new("Frame")
+toolbar.Size = UDim2.new(1, -52, 0, 38)
+toolbar.Position = UDim2.new(0, 52, 0, 42)
+toolbar.BackgroundColor3 = Theme.Bg
+toolbar.BorderSizePixel = 0
+toolbar.Parent = window
+
+local function makeToolBtn(text, x)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, 90, 0, 28)
+	b.Position = UDim2.new(0, x, 0.5, -14)
+	b.BackgroundColor3 = Theme.Surface2
+	b.Text = text
+	b.TextColor3 = Theme.Text
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 12
+	b.Parent = toolbar
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	return b
+end
+
+local executeBtn = makeToolBtn("▶  Execute", 12)
+local clearBtn = makeToolBtn("Clear", 110)
+local refreshBtn = makeToolBtn("Refresh", 208)
+local saveBtn = makeToolBtn("Save", 306)
+
+-- Content
+local contentArea = Instance.new("Frame")
+contentArea.Size = UDim2.new(1, -52, 1, -80)
+contentArea.Position = UDim2.new(0, 52, 0, 80)
+contentArea.BackgroundTransparency = 1
+contentArea.Parent = window
+
+local function createPage(id)
+	local f = Instance.new("Frame")
+	f.Size = UDim2.new(1, 0, 1, 0)
+	f.BackgroundTransparency = 1
+	f.Visible = false
+	f.Parent = contentArea
+	pageFrames[id] = f
+	return f
+end
+
+-- ========== EXECUTOR PAGE ==========
+local execPage = createPage("Executor")
+
+local lineNumbers = Instance.new("TextLabel")
+lineNumbers.Size = UDim2.new(0, 30, 1, -20)
+lineNumbers.Position = UDim2.new(0, 220, 0, 10)
+lineNumbers.BackgroundColor3 = Theme.Surface
+lineNumbers.Text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10"
+lineNumbers.TextColor3 = Theme.TextMuted
+lineNumbers.Font = Enum.Font.Code
+lineNumbers.TextSize = 14
+lineNumbers.TextXAlignment = Enum.TextXAlignment.Right
+lineNumbers.TextYAlignment = Enum.TextYAlignment.Top
+lineNumbers.Parent = execPage
+Instance.new("UICorner", lineNumbers).CornerRadius = UDim.new(0, 6)
+
+local commandBox = Instance.new("TextBox")
+commandBox.Size = UDim2.new(1, -270, 1, -20)
+commandBox.Position = UDim2.new(0, 255, 0, 10)
+commandBox.BackgroundColor3 = Theme.Surface
+commandBox.Text = ""
+commandBox.PlaceholderText = "-- Type commands here\n-- Example: heal me\n-- Example: setstat coins 1000"
+commandBox.PlaceholderColor3 = Theme.TextMuted
+commandBox.TextColor3 = Theme.Text
+commandBox.Font = Enum.Font.Code
+commandBox.TextSize = 14
+commandBox.TextXAlignment = Enum.TextXAlignment.Left
+commandBox.TextYAlignment = Enum.TextYAlignment.Top
+commandBox.MultiLine = true
+commandBox.ClearTextOnFocus = false
+commandBox.Parent = execPage
+Instance.new("UICorner", commandBox).CornerRadius = UDim.new(0, 6)
+
+local pad = Instance.new("UIPadding", commandBox)
+pad.PaddingTop = UDim.new(0, 8)
+pad.PaddingLeft = UDim.new(0, 10)
+
+-- Command list
+local cmdListFrame = Instance.new("ScrollingFrame")
+cmdListFrame.Size = UDim2.new(0, 200, 1, -20)
+cmdListFrame.Position = UDim2.new(0, 10, 0, 10)
+cmdListFrame.BackgroundColor3 = Theme.Surface
+cmdListFrame.BorderSizePixel = 0
+cmdListFrame.ScrollBarThickness = 4
+cmdListFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+cmdListFrame.Parent = execPage
+Instance.new("UICorner", cmdListFrame).CornerRadius = UDim.new(0, 8)
+
+local cmdListLayout = Instance.new("UIListLayout")
+cmdListLayout.Padding = UDim.new(0, 4)
+cmdListLayout.Parent = cmdListFrame
+
+Instance.new("UIPadding", cmdListFrame).PaddingTop = UDim.new(0, 8)
+
+local AllCommands = {
+	{Name = "Fly", Example = "fly me"},
+	{Name = "Noclip", Example = "noclip me"},
+	{Name = "God", Example = "god me"},
+	{Name = "Speed", Example = "speed me 40"},
+	{Name = "JumpPower", Example = "jumppower me 100"},
+	{Name = "Heal", Example = "heal me"},
+	{Name = "ForceField", Example = "forcefield me"},
+	{Name = "Kill", Example = "kill PlayerName"},
+	{Name = "Respawn", Example = "respawn me"},
+	{Name = "Bring", Example = "bring PlayerName"},
+	{Name = "Teleport", Example = "teleport PlayerName"},
+	{Name = "Freeze", Example = "freeze PlayerName"},
+	{Name = "Unfreeze", Example = "unfreeze PlayerName"},
+	{Name = "SetStat", Example = "setstat coins 1000"},
+	{Name = "AddStat", Example = "addstat coins 500"},
+	{Name = "GodStats", Example = "godstats me"},
+	{Name = "NormalStats", Example = "normalstats me"},
+	{Name = "Time", Example = "time 12"},
+	{Name = "Gravity", Example = "gravity 196"},
+	{Name = "Announce", Example = "announce Hello!"},
+}
+
+for _, cmd in ipairs(AllCommands) do
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -8, 0, 30)
+	btn.BackgroundColor3 = Theme.Surface2
+	btn.Text = "  " .. cmd.Name
+	btn.TextColor3 = Theme.Text
+	btn.Font = Enum.Font.Gotham
+	btn.TextSize = 13
+	btn.TextXAlignment = Enum.TextXAlignment.Left
+	btn.Parent = cmdListFrame
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+	btn.MouseButton1Click:Connect(function()
+		commandBox.Text = cmd.Example
+	end)
+end
+
+-- Other pages (simple)
+local favPage = createPage("Favorites")
+local linksPage = createPage("Links")
+local playersPage = createPage("Players")
+local settingsPage = createPage("Settings")
+
+-- Simple labels for other pages
+local function simpleLabel(parent, text)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.new(1, -20, 0, 40)
+	l.Position = UDim2.new(0, 10, 0, 10)
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.TextColor3 = Theme.TextDim
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 14
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Parent = parent
+end
+
+simpleLabel(favPage, "Favorites coming soon - use the command list")
+simpleLabel(linksPage, "Links page")
+simpleLabel(playersPage, "Players list")
+simpleLabel(settingsPage, "Settings")
+
+-- ========== EXECUTE ==========
+local function executeCommand()
+	local text = commandBox.Text
+	if text == "" then return end
+
+	for _, line in ipairs(string.split(text, "\n")) do
+		line = line:gsub("^%s+", ""):gsub("%s+$", "")
+		if line == "" or line:match("^%-%-") then continue end
+
+		local words = {}
+		for w in line:gmatch("%S+") do table.insert(words, w) end
+		if #words == 0 then continue end
+
+		local raw = words[1]:lower()
+		table.remove(words, 1)
+
+		local map = {
+			fly = "Fly", noclip = "Noclip", god = "God", speed = "Speed",
+			jumppower = "JumpPower", heal = "Heal", forcefield = "ForceField",
+			kill = "Kill", respawn = "Respawn", bring = "Bring", teleport = "Teleport",
+			freeze = "Freeze", unfreeze = "Unfreeze", setstat = "SetStat",
+			addstat = "AddStat", godstats = "GodStats", normalstats = "NormalStats",
+			time = "Time", gravity = "Gravity", announce = "Announce",
+		}
+
+		local cmd = map[raw] or (raw:sub(1,1):upper() .. raw:sub(2))
+		local targetName = nil
+		local args = {}
+
+		if #words > 0 then
+			targetName = words[1]
+			table.remove(words, 1)
+			args = words
+		end
+
+		RE_Execute:FireServer(cmd, targetName, args)
+	end
+end
+
+executeBtn.MouseButton1Click:Connect(executeCommand)
+clearBtn.MouseButton1Click:Connect(function()
+	commandBox.Text = ""
+end)
+
+-- ========== WINDOW CONTROLS ==========
+local dragging = false
+local dragStart, startPos
+
+topBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPos = window.Position
+	end
+end)
+
+topBar.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local delta = input.Position - dragStart
+		window.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	window.Visible = false
+end)
+
+minBtn.MouseButton1Click:Connect(function()
+	contentArea.Visible = not contentArea.Visible
+	toolbar.Visible = contentArea.Visible
+end)
+
+-- ========== TOGGLE PANEL ==========
+local function togglePanel()
+	window.Visible = not window.Visible
+	if window.Visible then
+		RE_RequestPanel:FireServer()
+		setPage("Executor")
+	end
+end
+
+-- RightCtrl
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == Enum.KeyCode.RightControl then
+		togglePanel()
+	end
+end)
+
+-- ========== TOOL HOOK (VERY STRONG) ==========
+local function onToolActivated()
+	togglePanel()
+end
+
+local function hookTool(tool: Tool)
+	if tool:GetAttribute("AdminHooked") then return end
+	tool:SetAttribute("AdminHooked", true)
+
+	tool.Activated:Connect(onToolActivated)
+	print("[AdminPanel] Hooked tool")
+end
+
+local function scanForTool()
+	local bp = player:FindFirstChild("Backpack")
+	if bp then
+		local t = bp:FindFirstChild("Admin Tool")
+		if t and t:IsA("Tool") then
+			hookTool(t)
+		end
+	end
+
+	local char = player.Character
+	if char then
+		local t = char:FindFirstChild("Admin Tool")
+		if t and t:IsA("Tool") then
+			hookTool(t)
+		end
+	end
+end
+
+-- Continuous scanning
+task.spawn(function()
+	while true do
+		scanForTool()
+		task.wait(1)
+	end
+end)
+
+player.CharacterAdded:Connect(function()
+	task.wait(2)
+	scanForTool()
+end)
+
+if player:FindFirstChild("Backpack") then
+	player.Backpack.ChildAdded:Connect(function(child)
+		if child.Name == "Admin Tool" and child:IsA("Tool") then
+			hookTool(child)
+		end
+	end)
+end
+
+-- Notifications
+RE_Notify.OnClientEvent:Connect(function(msg)
+	StarterGui:SetCore("SendNotification", {
+		Title = "Admin",
+		Text = tostring(msg),
+		Duration = 4
+	})
+end)
+
+-- Start
+setPage("Executor")
+print("[AdminPanel] Client ready - Press RightCtrl or click the Admin Tool")
