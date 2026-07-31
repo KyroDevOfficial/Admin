@@ -1,0 +1,643 @@
+--!strict
+--[[
+	ADMIN SYSTEM - FULL SERVER SCRIPT
+	• Username targeting (fixed)
+	• Leaderstats + Player stats
+	• Rainbow Admin Tool
+	• Self by default
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+
+--// ====================== CONFIG ======================
+local Config = {
+	Ranks = {
+		Owner = 100,
+		HeadAdmin = 80,
+		Admin = 50,
+		Moderator = 20,
+		None = 0,
+	},
+
+	-- ⚠️ PUT YOUR REAL USER ID HERE
+	UserRanks = {
+		[2244172875] = "Owner", -- ← CHANGE THIS
+	},
+
+	GroupId = 0,
+	GroupRanks = {},
+}
+
+--// ====================== REMOTES ======================
+local Remotes = Instance.new("Folder")
+Remotes.Name = "AdminRemotes"
+Remotes.Parent = ReplicatedStorage
+
+local function createRemote(name: string, className: string)
+	local r = Instance.new(className)
+	r.Name = name
+	r.Parent = Remotes
+	return r
+end
+
+local RE_Execute      = createRemote("ExecuteCommand", "RemoteEvent")
+local RE_RequestPanel = createRemote("RequestPanel", "RemoteEvent")
+local RE_Notify       = createRemote("Notify", "RemoteEvent")
+local RF_GetPlayerList = createRemote("GetPlayerList", "RemoteFunction")
+local RF_GetHealthData = createRemote("GetHealthData", "RemoteFunction")
+local RF_GetServerInfo = createRemote("GetServerInfo", "RemoteFunction")
+
+--// ====================== PERMISSIONS ======================
+local function getRank(player: Player): number
+	local rankName = Config.UserRanks[player.UserId]
+	if rankName then
+		return Config.Ranks[rankName] or 0
+	end
+	return 0
+end
+
+local function hasPerm(player: Player, required: number): boolean
+	return getRank(player) >= required
+end
+
+local function getRankName(player: Player): string
+	local r = getRank(player)
+	for name, val in pairs(Config.Ranks) do
+		if val == r then return name end
+	end
+	return "None"
+end
+
+--// ====================== LOGGING ======================
+local function log(executor: Player, action: string, details: string?)
+	print(string.format("[ADMIN] %s → %s | %s", executor.Name, action, details or ""))
+end
+
+--// ====================== LEADERSTATS ======================
+local function setupLeaderstats(player: Player)
+	if player:FindFirstChild("leaderstats") then return end
+
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local function addStat(name: string, value: number)
+		local stat = Instance.new("IntValue")
+		stat.Name = name
+		stat.Value = value
+		stat.Parent = leaderstats
+	end
+
+	addStat("Coins", 0)
+	addStat("Wins", 0)
+	addStat("Level", 1)
+	addStat("EXP", 0)
+end
+
+--// ====================== TOOL ======================
+local function giveTool(player: Player)
+	if not hasPerm(player, Config.Ranks.Moderator) then return end
+
+	local function clean(container: Instance?)
+		if not container then return end
+		for _, obj in ipairs(container:GetChildren()) do
+			if obj.Name == "Admin Tool" then
+				obj:Destroy()
+			end
+		end
+	end
+	clean(player:FindFirstChild("Backpack"))
+	if player.Character then clean(player.Character) end
+
+	local tool = Instance.new("Tool")
+	tool.Name = "Admin Tool"
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool.ToolTip = "Admin Panel"
+
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.75, 0.75, 0.75)
+	handle.Material = Enum.Material.Neon
+	handle.Color = Color3.fromRGB(255, 255, 255)
+	handle.CanCollide = false
+	handle.Parent = tool
+
+	tool.Equipped:Connect(function()
+		local char = tool.Parent
+		if not char then return end
+		local arm = char:FindFirstChild("Right Arm") or char:FindFirstChild("RightHand")
+		if not arm or not arm:IsA("BasePart") then return end
+
+		if not arm:GetAttribute("OriginalColor") then
+			arm:SetAttribute("OriginalColor", arm.Color)
+		end
+
+		local hue = 0
+		local conn
+		conn = RunService.Heartbeat:Connect(function(dt)
+			if not tool:IsDescendantOf(char) then
+				conn:Disconnect()
+				local original = arm:GetAttribute("OriginalColor")
+				if original then arm.Color = original end
+				return
+			end
+			hue = (hue + dt * 0.9) % 1
+			arm.Color = Color3.fromHSV(hue, 1, 1)
+		end)
+	end)
+
+	local backpack = player:FindFirstChild("Backpack") or player:WaitForChild("Backpack", 5)
+	if backpack then
+		tool.Parent = backpack
+	end
+end
+
+--// ====================== PLAYER SETUP ======================
+Players.PlayerAdded:Connect(function(player)
+	setupLeaderstats(player)
+
+	player.CharacterAdded:Connect(function()
+		task.wait(1.3)
+		giveTool(player)
+	end)
+
+	if player.Character then
+		task.defer(function()
+			giveTool(player)
+		end)
+	end
+end)
+
+for _, player in ipairs(Players:GetPlayers()) do
+	setupLeaderstats(player)
+	task.spawn(function()
+		task.wait(1)
+		giveTool(player)
+	end)
+end
+
+--// ====================== HEALTH BRIDGE ======================
+local HealthService = nil
+local function getHealthService()
+	if HealthService then return HealthService end
+	local ok, mod = pcall(function()
+		return require(game.ServerScriptService.HealthSystem.HealthService)
+	end)
+	if ok then HealthService = mod end
+	return HealthService
+end
+
+--// ====================== COMMANDS ======================
+local Commands = {}
+
+Commands.Fly = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target)
+		local char = target.Character
+		if not char then return false, "No character" end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if not hrp or not hum then return false, "Missing parts" end
+
+		if hrp:FindFirstChild("AdminFlyBV") then
+			hrp.AdminFlyBV:Destroy()
+			if hrp:FindFirstChild("AdminFlyBG") then hrp.AdminFlyBG:Destroy() end
+			hum.PlatformStand = false
+			return true, "Fly disabled"
+		end
+
+		hum.PlatformStand = true
+
+		local bv = Instance.new("BodyVelocity")
+		bv.Name = "AdminFlyBV"
+		bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+		bv.Velocity = Vector3.zero
+		bv.Parent = hrp
+
+		local bg = Instance.new("BodyGyro")
+		bg.Name = "AdminFlyBG"
+		bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+		bg.P = 9000
+		bg.Parent = hrp
+
+		task.spawn(function()
+			local speed = 70
+			while bv.Parent and char and hum do
+				local move = hum.MoveDirection
+				local camCF = workspace.CurrentCamera.CFrame
+				local dir = (camCF.LookVector * -move.Z + camCF.RightVector * move.X)
+				bv.Velocity = Vector3.new(dir.X * speed, bv.Velocity.Y, dir.Z * speed)
+				if hum.Jump then
+					bv.Velocity = bv.Velocity + Vector3.new(0, 50, 0)
+				end
+				bg.CFrame = camCF
+				task.wait()
+			end
+		end)
+
+		return true, "Fly enabled"
+	end
+}
+
+Commands.Noclip = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target)
+		local char = target.Character
+		if not char then return false, "No character" end
+		local state = char:GetAttribute("AdminNoclip") or false
+		char:SetAttribute("AdminNoclip", not state)
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") then
+				p.CanCollide = state
+			end
+		end
+		return true, "Noclip " .. (not state and "ON" or "OFF")
+	end
+}
+
+Commands.God = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target)
+		local char = target.Character
+		if not char then return false, "No character" end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if not hum then return false, "No humanoid" end
+		local state = char:GetAttribute("AdminGod") or false
+		char:SetAttribute("AdminGod", not state)
+		hum.MaxHealth = not state and math.huge or 100
+		hum.Health = not state and math.huge or 100
+		return true, "God Mode " .. (not state and "ON" or "OFF")
+	end
+}
+
+Commands.Speed = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target, args)
+		local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if not hum then return false, "No humanoid" end
+		local value = tonumber(args[1]) or 16
+		hum.WalkSpeed = math.clamp(value, 0, 500)
+		return true, "WalkSpeed → " .. value
+	end
+}
+
+Commands.JumpPower = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target, args)
+		local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if not hum then return false, "No humanoid" end
+		local value = tonumber(args[1]) or 50
+		hum.JumpPower = math.clamp(value, 0, 500)
+		return true, "JumpPower → " .. value
+	end
+}
+
+Commands.Heal = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if hum then hum.Health = hum.MaxHealth end
+
+		local hs = getHealthService()
+		if hs then
+			local data = hs.GetData(target)
+			if data then
+				for _, part in pairs(data.Parts) do
+					part.CurrentHealth = part.MaxHealth - part.PermanentDamage
+					part.Bleeding = 0
+					part.Fracture = false
+					part.Infection = 0
+					part.Pain = 0
+				end
+				data.State.BloodVolume = 5000
+				data.State.Oxygen = 100
+				data.State.Consciousness = 100
+				data.State.Shock = 0
+				hs.MarkDirty(target)
+			end
+		end
+		return true, "Fully healed"
+	end
+}
+
+Commands.ForceField = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target)
+		local char = target.Character
+		if not char then return false, "No character" end
+		local ff = char:FindFirstChildOfClass("ForceField")
+		if ff then
+			ff:Destroy()
+			return true, "ForceField removed"
+		else
+			Instance.new("ForceField").Parent = char
+			return true, "ForceField given"
+		end
+	end
+}
+
+Commands.Kill = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target)
+		local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.Health = 0
+			return true, "Killed"
+		end
+		return false, "Failed"
+	end
+}
+
+Commands.Respawn = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		target:LoadCharacter()
+		return true, "Respawned"
+	end
+}
+
+Commands.Bring = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		if not executor.Character or not target.Character then return false, "Missing character" end
+		local hrp = executor.Character:FindFirstChild("HumanoidRootPart")
+		local thrp = target.Character:FindFirstChild("HumanoidRootPart")
+		if hrp and thrp then
+			thrp.CFrame = hrp.CFrame * CFrame.new(3, 0, 0)
+			return true, "Brought " .. target.Name
+		end
+		return false, "Failed"
+	end
+}
+
+Commands.Teleport = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		if not executor.Character or not target.Character then return false, "Missing character" end
+		local hrp = executor.Character:FindFirstChild("HumanoidRootPart")
+		local thrp = target.Character:FindFirstChild("HumanoidRootPart")
+		if hrp and thrp then
+			hrp.CFrame = thrp.CFrame * CFrame.new(3, 0, 0)
+			return true, "Teleported to " .. target.Name
+		end
+		return false, "Failed"
+	end
+}
+
+Commands.Freeze = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hrp.Anchored = true
+			return true, "Frozen"
+		end
+		return false, "Failed"
+	end
+}
+
+Commands.Unfreeze = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hrp.Anchored = false
+			return true, "Unfrozen"
+		end
+		return false, "Failed"
+	end
+}
+
+Commands.SetStat = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target, args)
+		local statName = args[1] and string.lower(args[1])
+		local value = tonumber(args[2])
+		if not statName or value == nil then
+			return false, "Usage: setstat <name> <number>"
+		end
+
+		local char = target.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+		if statName == "speed" or statName == "walkspeed" then
+			if hum then hum.WalkSpeed = value end
+			return true, "WalkSpeed set to " .. value
+		elseif statName == "jump" or statName == "jumppower" then
+			if hum then hum.JumpPower = value end
+			return true, "JumpPower set to " .. value
+		elseif statName == "hp" or statName == "health" then
+			if hum then hum.Health = value end
+			return true, "Health set to " .. value
+		elseif statName == "maxhp" or statName == "maxhealth" then
+			if hum then
+				hum.MaxHealth = value
+				hum.Health = value
+			end
+			return true, "MaxHealth set to " .. value
+		end
+
+		local ls = target:FindFirstChild("leaderstats")
+		if ls then
+			local stat = ls:FindFirstChild(statName:sub(1,1):upper() .. statName:sub(2)) or ls:FindFirstChild(statName)
+			if stat and (stat:IsA("IntValue") or stat:IsA("NumberValue")) then
+				stat.Value = value
+				return true, stat.Name .. " set to " .. value
+			end
+		end
+
+		return false, "Unknown stat"
+	end
+}
+
+Commands.AddStat = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target, args)
+		local statName = args[1] and string.lower(args[1])
+		local amount = tonumber(args[2]) or 0
+		if not statName then return false, "Usage: addstat <name> <number>" end
+
+		local ls = target:FindFirstChild("leaderstats")
+		if not ls then return false, "No leaderstats" end
+
+		local stat = ls:FindFirstChild(statName:sub(1,1):upper() .. statName:sub(2)) or ls:FindFirstChild(statName)
+		if stat and (stat:IsA("IntValue") or stat:IsA("NumberValue")) then
+			stat.Value += amount
+			return true, "Added " .. amount .. " → " .. stat.Name .. " = " .. stat.Value
+		end
+		return false, "Stat not found"
+	end
+}
+
+Commands.GodStats = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target)
+		local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.WalkSpeed = 45
+			hum.JumpPower = 90
+			hum.MaxHealth = 500
+			hum.Health = 500
+		end
+		return true, "God stats applied"
+	end
+}
+
+Commands.NormalStats = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target)
+		local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.WalkSpeed = 16
+			hum.JumpPower = 50
+			hum.MaxHealth = 100
+			hum.Health = 100
+		end
+		return true, "Stats reset"
+	end
+}
+
+Commands.Time = {
+	Rank = Config.Ranks.Admin,
+	Func = function(executor, target, args)
+		local t = tonumber(args[1]) or 12
+		Lighting.ClockTime = math.clamp(t, 0, 24)
+		return true, "Time set to " .. t
+	end
+}
+
+Commands.Gravity = {
+	Rank = Config.Ranks.HeadAdmin,
+	Func = function(executor, target, args)
+		local g = tonumber(args[1]) or 196.2
+		workspace.Gravity = math.clamp(g, 0, 1000)
+		return true, "Gravity set to " .. g
+	end
+}
+
+Commands.Announce = {
+	Rank = Config.Ranks.Moderator,
+	Func = function(executor, target, args)
+		local msg = table.concat(args, " ")
+		if msg == "" then return false, "Empty message" end
+		for _, p in ipairs(Players:GetPlayers()) do
+			RE_Notify:FireClient(p, "[ANNOUNCEMENT] " .. msg)
+		end
+		return true, "Announced"
+	end
+}
+
+--// ====================== HANDLER (FIXED) ======================
+RE_Execute.OnServerEvent:Connect(function(player: Player, cmdName: string, targetName: any, args: any)
+	if typeof(cmdName) ~= "string" then return end
+	args = typeof(args) == "table" and args or {}
+	targetName = typeof(targetName) == "string" and targetName or nil
+
+	if not hasPerm(player, Config.Ranks.Moderator) then
+		RE_Notify:FireClient(player, "No permission")
+		return
+	end
+
+	local cmd = Commands[cmdName]
+	if not cmd then
+		RE_Notify:FireClient(player, "Unknown command: " .. tostring(cmdName))
+		return
+	end
+
+	if not hasPerm(player, cmd.Rank) then
+		RE_Notify:FireClient(player, "Insufficient rank")
+		return
+	end
+
+	-- Target resolution
+	local target: Player = player
+
+	if targetName and targetName ~= "" and targetName:lower() ~= "me" and targetName:lower() ~= "self" then
+		local found = false
+		local search = targetName:lower()
+
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Name:lower() == search or p.DisplayName:lower() == search then
+				target = p
+				found = true
+				break
+			end
+		end
+
+		if not found then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Name:lower():find(search, 1, true) or p.DisplayName:lower():find(search, 1, true) then
+					target = p
+					found = true
+					break
+				end
+			end
+		end
+
+		if not found then
+			local id = tonumber(targetName)
+			if id then
+				local p = Players:GetPlayerByUserId(id)
+				if p then
+					target = p
+					found = true
+				end
+			end
+		end
+
+		if not found then
+			RE_Notify:FireClient(player, "Player not found: " .. targetName)
+			return
+		end
+	end
+
+	local success, result = pcall(function()
+		return cmd.Func(player, target, args)
+	end)
+
+	if success then
+		local msg = result
+		if typeof(result) == "string" then
+			RE_Notify:FireClient(player, msg)
+			log(player, cmdName, msg)
+		else
+			RE_Notify:FireClient(player, "Done")
+		end
+	else
+		RE_Notify:FireClient(player, "Error running command")
+		warn("[Admin Error]", result)
+	end
+end)
+
+--// ====================== DATA ======================
+RF_GetPlayerList.OnServerInvoke = function(player)
+	if not hasPerm(player, Config.Ranks.Moderator) then return {} end
+	local list = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		table.insert(list, {
+			Name = p.Name,
+			UserId = p.UserId,
+			Rank = getRankName(p),
+			DisplayName = p.DisplayName,
+		})
+	end
+	return list
+end
+
+RF_GetHealthData.OnServerInvoke = function()
+	return nil
+end
+
+RE_RequestPanel.OnServerEvent:Connect(function(player)
+	if hasPerm(player, Config.Ranks.Moderator) then
+		RE_Notify:FireClient(player, "Authorized | Rank: " .. getRankName(player))
+	else
+		RE_Notify:FireClient(player, "Access denied")
+	end
+end)
+
+print("[AdminSystem] Fully loaded")
